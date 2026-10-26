@@ -223,6 +223,8 @@ body{font-family:'DM Sans',system-ui,sans-serif;background:var(--bg);color:var(-
 /* STATUS */
 .status-row{display:flex;gap:6px;flex-wrap:wrap}
 .status-btn{display:flex;align-items:center;gap:5px;padding:7px 14px;border-radius:8px;border:2px solid var(--border);cursor:pointer;font-family:inherit;font-size:12px;font-weight:500;background:var(--surface2);color:var(--fg-muted);transition:all .15s}
+.status-btn-sm{padding:5px 10px;font-size:11px;}
+.student-status-row{display:flex;gap:6px;margin-bottom:8px;}
 .status-btn:hover{border-color:var(--fg-subtle);color:var(--fg)}
 .status-btn.active-done{background:var(--success-bg);color:var(--success);border-color:var(--success)}
 .status-btn.active-cancelled{background:var(--cancelled-bg);color:var(--cancelled-fg);border-color:var(--cancelled-fg)}
@@ -1034,6 +1036,16 @@ function noteKey(dateStr,dow,time){return`${dateStr}__${dow}__${time}`;}
 function getNote(dateStr,dow,time){return notesCache[noteKey(dateStr,dow,time)]||null;}
 function setNote(dateStr,dow,time,data){notesCache[noteKey(dateStr,dow,time)]=data;saveCache();}
 function deleteNote(dateStr,dow,time){delete notesCache[noteKey(dateStr,dow,time)];saveCache();}
+// Resolve status from note (handles both string and per-student object)
+function resolveStatus(note){
+  if(!note||!note.status)return null;
+  if(typeof note.status==='string')return note.status;
+  // per-student object: if all cancelled -> cancelled, if any done -> done, else null
+  const vals=Object.values(note.status);
+  if(vals.every(v=>v==='cancelled'))return'cancelled';
+  if(vals.some(v=>v==='done'))return'done';
+  return null;
+}
 
 // ============================================================
 // DATE HELPERS
@@ -1076,7 +1088,7 @@ function hasPrevUnpaidSession(session,currentDate){
     const[ds,dow,time]=parts;
     if(Number(dow)!==session.dow||time!==session.time)continue;
     const d=new Date(ds);if(isNaN(d.getTime())||d.getTime()>=currentMs)continue;
-    if(note.status==='cancelled')continue;
+    if(resolveStatus(note)==='cancelled')continue;
     const hasContent=note&&(note.note||note.hw);if(!hasContent)continue;
     const anyUnpaid=students.some(s=>!getPaidForStudent(note.paid,s,session.name));
     if(anyUnpaid)return{dateStr:ds,note};
@@ -1116,7 +1128,7 @@ if(getToken())setSyncStatus('ok');
 async function syncToNotion(session,ds,data){
   const token=getToken();if(!token){setSyncStatus('notoken');return false;}
   setSyncStatus('syncing');
-  if(data.status==='cancelled'){setSyncStatus('ok');return true;}
+  if(resolveStatus(data)==='cancelled'){setSyncStatus('ok');return true;}
   const students=parseStudents(session.name);
   const payLines=students.map(s=>{
     const p=getPaidForStudent(data.paid,s,session.name);
@@ -1195,7 +1207,7 @@ function buildChip(s,date,isFreeSlot){
   }
 
   const note=getNote(ds,s.dow,s.time);
-  const isCancelled=note&&note.status==='cancelled';
+  const isCancelled=note&&resolveStatus(note)==='cancelled';
 
   const chip=document.createElement('div');
   chip.className=`session slot-${s.slot}`;
@@ -1299,13 +1311,47 @@ function payMethodLabel(method){
   if(method==='cash')return'💵 Cash';if(method==='revolut')return'🟣 Revolut';if(method==='card-firma')return'🏢 Card firmă';return'Neachitat';
 }
 
+let currentStudentStatuses={};// per-student statuses when multi-student session
+
+function isMultiStudent(){return modalSession&&parseStudents(modalSession.name).length>1;}
+
 function selectStatus(status){
+  if(isMultiStudent())return;// global status disabled for multi-student
   currentStatus=(currentStatus===status)?null:status;updateStatusUI();
 }
 function updateStatusUI(){
+  if(isMultiStudent()){
+    // hide global status buttons, show per-student ones
+    document.getElementById('statusRow').style.display='none';
+    document.getElementById('sessionContent').style.display='block';
+    return;
+  }
+  document.getElementById('statusRow').style.display='flex';
   document.getElementById('statusDone').className='status-btn'+(currentStatus==='done'?' active-done':'');
   document.getElementById('statusCancelled').className='status-btn'+(currentStatus==='cancelled'?' active-cancelled':'');
   document.getElementById('sessionContent').style.display=currentStatus==='cancelled'?'none':'block';
+}
+
+function selectStudentStatus(studentName,status){
+  currentStudentStatuses[studentName]=(currentStudentStatuses[studentName]===status)?null:status;
+  updateStudentStatusUI(studentName);
+}
+function updateStudentStatusUI(studentName){
+  const slug=studentName.replace(/\s+/g,'_');
+  const btnD=document.getElementById(`sstatus-done-${slug}`);
+  const btnC=document.getElementById(`sstatus-cancelled-${slug}`);
+  if(!btnD||!btnC)return;
+  const st=currentStudentStatuses[studentName]||null;
+  btnD.className='status-btn status-btn-sm'+(st==='done'?' active-done':'');
+  btnC.className='status-btn status-btn-sm'+(st==='cancelled'?' active-cancelled':'');
+}
+function getEffectiveStatus(){
+  if(!isMultiStudent())return currentStatus;
+  const students=parseStudents(modalSession.name);
+  const statuses=students.map(s=>currentStudentStatuses[s]||null);
+  if(statuses.every(s=>s==='cancelled'))return'cancelled';
+  if(statuses.some(s=>s==='done'))return'done';
+  return statuses[0];
 }
 
 function buildPaymentUI(sessionName,paidData){
@@ -1317,9 +1363,18 @@ function buildPaymentUI(sessionName,paidData){
     const block=document.createElement('div');block.className='student-pay-block';
     block.id=`payblock-${studentName.replace(/\s+/g,'_')}`;
     if(students.length>1){
+      const slug=studentName.replace(/\s+/g,'_');
       const nameRow=document.createElement('div');nameRow.className='student-pay-name';nameRow.textContent='👤 '+studentName;
-      const curLabel=document.createElement('span');curLabel.className='student-pay-current';curLabel.id=`pay-cur-${studentName.replace(/\s+/g,'_')}`;curLabel.textContent=initPay?payMethodLabel(initPay):'';
+      const curLabel=document.createElement('span');curLabel.className='student-pay-current';curLabel.id=`pay-cur-${slug}`;curLabel.textContent=initPay?payMethodLabel(initPay):'';
       nameRow.appendChild(curLabel);block.appendChild(nameRow);
+      // Per-student status buttons
+      const stRow=document.createElement('div');stRow.className='student-status-row';
+      const st=currentStudentStatuses[studentName]||null;
+      const btnD=document.createElement('button');btnD.id=`sstatus-done-${slug}`;btnD.className='status-btn status-btn-sm'+(st==='done'?' active-done':'');btnD.textContent='✅ Am făcut';
+      btnD.addEventListener('click',()=>selectStudentStatus(studentName,'done'));stRow.appendChild(btnD);
+      const btnC=document.createElement('button');btnC.id=`sstatus-cancelled-${slug}`;btnC.className='status-btn status-btn-sm'+(st==='cancelled'?' active-cancelled':'');btnC.textContent='🚫 Nu vine';
+      btnC.addEventListener('click',()=>selectStudentStatus(studentName,'cancelled'));stRow.appendChild(btnC);
+      block.appendChild(stRow);
     }
     const methods=document.createElement('div');methods.className='payment-methods';
     const btnCash=document.createElement('button');btnCash.className='pay-btn'+(initPay==='cash'?' active-cash':'');btnCash.textContent='💵 Cash';
@@ -1372,7 +1427,16 @@ function openModal(s,date){
   document.getElementById('modalMeta').textContent=`${RO_DAYS[date.getDay()]} ${date.getDate()} ${RO_MONTHS[date.getMonth()]} · ${s.time} · Cls. ${s.cls}`;
   document.getElementById('modalColorTag').style.background=`var(--c${s.slot})`;
   fieldNote.value=note.note||'';fieldHw.value=note.hw||'';
-  currentStatus=note.status||null;updateStatusUI();
+  currentStudentStatuses={};
+  const students=parseStudents(s.name);
+  if(students.length>1&&note.status&&typeof note.status==='object'){
+    students.forEach(sn=>{currentStudentStatuses[sn]=note.status[sn]||null;});
+    currentStatus=null;
+  } else {
+    currentStatus=note.status||null;
+    students.forEach(sn=>{currentStudentStatuses[sn]=null;});
+  }
+  updateStatusUI();
   currentPayments={};cardExpanded={};
   buildPaymentUI(s.name,note.paid||null);
   const unpaidPrev=hasPrevUnpaidSession(s,date);
@@ -1383,11 +1447,12 @@ function openModal(s,date){
   document.getElementById('btnDeleteSession').style.display=hasData?'inline-flex':'none';
   // Reprogramează — show when session has a student and is not already cancelled
   const btnReschedule=document.getElementById('btnReschedule');
-  const showReschedule=s.name&&s.name!==''&&currentStatus!=='cancelled';
+  const effSt=isMultiStudent()?resolveStatus({status:currentStudentStatuses}):currentStatus;
+  const showReschedule=s.name&&s.name!==''&&effSt!=='cancelled';
   btnReschedule.style.display=showReschedule?'inline-flex':'none';
   // Mesaj rapid — show when session has data and is not a free slot
   const btnMsg=document.getElementById('btnMesajRapid');
-  const showMsg=hasData&&currentStatus!=='cancelled'&&s.name&&s.name!=='';
+  const showMsg=hasData&&effSt!=='cancelled'&&s.name&&s.name!=='';
   btnMsg.style.display=showMsg?'flex':'none';
   btnMsg.classList.remove('copied');
   btnMsg.textContent='📋 Copiază mesaj pentru părinte';
@@ -1410,11 +1475,13 @@ document.getElementById('btnDeleteSession').addEventListener('click',()=>{
 
 document.getElementById('btnSave').addEventListener('click',async()=>{
   if(!modalSession||!modalDate)return;
+  const effStatus=isMultiStudent()?currentStudentStatuses:currentStatus;
+  const allCancelled=isMultiStudent()&&parseStudents(modalSession.name).every(sn=>currentStudentStatuses[sn]==='cancelled');
   const data={
-    note:currentStatus==='cancelled'?'':fieldNote.value.trim(),
-    hw:currentStatus==='cancelled'?'':fieldHw.value.trim(),
-    paid:currentStatus==='cancelled'?null:collectPaidData(modalSession.name),
-    status:currentStatus,savedAt:new Date().toISOString()
+    note:allCancelled?'':fieldNote.value.trim(),
+    hw:allCancelled?'':fieldHw.value.trim(),
+    paid:allCancelled?null:collectPaidData(modalSession.name),
+    status:effStatus,savedAt:new Date().toISOString()
   };
   const ds=dateStr(modalDate);
   setNote(ds,modalSession.dow,modalSession.time,data);
@@ -1647,11 +1714,16 @@ function renderPlati(){
     const[ds,dowStr,time]=parts;const dow=Number(dowStr);
     const sess=getAllActiveSessions().find(s=>s.dow===dow&&s.time===time);if(!sess)continue;
     const d=new Date(ds);if(isNaN(d.getTime()))continue;
-    const isCancelled=note.status==='cancelled';const hasContent=!!(note.note||note.hw)||isCancelled;
+    const isCancelled=resolveStatus(note)==='cancelled';const hasContent=!!(note.note||note.hw)||isCancelled;
     const students=parseStudents(sess.name);
     students.forEach(studentName=>{
-      const method=isCancelled?null:getPaidForStudent(note.paid,studentName,sess.name);
-      allEntries.push({ds,date:d,dow,time,session:sess,note,studentName,method,hasContent,isCancelled,nk:key});
+      // For multi-student sessions, check per-student status
+      let studentCancelled=isCancelled;
+      if(students.length>1&&note.status&&typeof note.status==='object'){
+        studentCancelled=note.status[studentName]==='cancelled';
+      }
+      const method=studentCancelled?null:getPaidForStudent(note.paid,studentName,sess.name);
+      allEntries.push({ds,date:d,dow,time,session:sess,note,studentName,method,hasContent,isCancelled:studentCancelled,nk:key});
     });
   }
   if(allEntries.length===0){container.innerHTML='<div class="empty-state"><div class="empty-icon">💳</div><div>Nu există sesiuni înregistrate.</div></div>';document.getElementById('platiSubtitle').textContent='';return;}
@@ -1810,8 +1882,8 @@ function renderElevSesiuni(numeFisa){
 
   // Stats
   const total=notes.length;
-  const done=notes.filter(n=>n.status==='done').length;
-  const cancelled=notes.filter(n=>n.status==='cancelled').length;
+  const done=notes.filter(n=>resolveStatus(n)==='done').length;
+  const cancelled=notes.filter(n=>resolveStatus(n)==='cancelled').length;
   const statsEl=document.getElementById('elevSesiuniStats');
   const stat=(label,val,color)=>{
     const d=document.createElement('div');
@@ -1839,7 +1911,7 @@ function renderElevSesiuni(numeFisa){
   }
   const sorted=[...notes].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,10);
   listEl.innerHTML=sorted.map(n=>{
-    const icon=n.status==='done'?'✅':n.status==='cancelled'?'❌':'⬜';
+    const icon=resolveStatus(n)==='done'?'✅':resolveStatus(n)==='cancelled'?'❌':'⬜';
     return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">${icon} <span>${n.date||'—'}</span><span style="margin-left:auto;color:var(--fg-muted)">${n.time}</span></div>`;
   }).join('');
 }
@@ -2394,7 +2466,7 @@ async function exportRaportLunar(){
   allNotes.forEach(([key,note])=>{
     // key format: YYYY-MM-DD__dow__HH:MM
     if(!key.startsWith(`${yr}-${moStr}-`))return;
-    if(note.status==='cancelled'){totalAnulate++;return;}
+    if(resolveStatus(note)==='cancelled'){totalAnulate++;return;}
     if(!note.name&&!note.status)return; // empty slot
     totalSesiuni++;
     totalOre+=1.5; // standard session = 90 min
