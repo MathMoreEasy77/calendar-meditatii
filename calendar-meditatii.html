@@ -471,6 +471,29 @@ body{font-family:'DM Sans',system-ui,sans-serif;background:var(--bg);color:var(-
 @media(max-width:600px){
   .cal-grid{gap:2px}.cal-day{min-height:68px;padding:4px;border-radius:6px}.cal-dow{font-size:10px;padding:4px 2px}.session{padding:2px 4px;font-size:9.5px}.session .s-time{font-size:8.5px}.cal-month-label{font-size:17px}.modal{border-radius:14px}.header-sub{display:none}.page-tab{padding:10px 14px;font-size:12px}.data-table td,.data-table th{padding:7px 8px}.pay-btn{padding:6px 10px;font-size:11px}.form-row{flex-direction:column}
 }
+
+/* Buton principal de salvare, vizibil în ambele teme. */
+#saveAllChanges {
+  background:#B6FF35;
+  color:#142500;
+  font-size:17px;
+  font-weight:800;
+  line-height:1.3;
+  padding:15px 24px;
+  min-height:56px;
+  border:2px solid #E4FFB5;
+  border-radius:14px;
+  box-shadow:0 0 0 3px rgba(182,255,53,.18),0 5px 16px rgba(0,0,0,.22);
+  white-space:normal;
+  text-align:center;
+  justify-content:center;
+}
+#saveAllChanges:hover {background:#CEFF75;color:#142500;border-color:#fff;}
+#saveAllChanges:active {transform:translateY(1px);}
+#saveAllChanges:focus-visible {outline:3px solid #fff;outline-offset:4px;}
+#saveAllChanges:disabled {background:#CBD5C0;color:#364330;box-shadow:none;cursor:not-allowed;}
+@media(max-width:600px){#saveAllChanges{width:100%;font-size:16px;padding:14px 18px;}}
+
 </style>
 
 <!-- HEADER -->
@@ -483,6 +506,9 @@ body{font-family:'DM Sans',system-ui,sans-serif;background:var(--bg);color:var(-
     </div>
   </div>
   <div class="header-right">
+    <button class="add-student-btn" id="saveAllChanges">Salvează toate modificările</button>
+    <button class="add-student-btn" id="downloadSafeBackup">Descarcă backup</button>
+    <span id="localSaveStatus" role="status" style="font-size:12px;color:white">Salvare locală în acest browser</span>
     <button class="add-student-btn" id="btnAddStudent">⚙️ Gestionează elevi</button>
     <div class="sync-badge" id="syncBadge" title="Click pentru token Notion">
       <div class="sync-dot" id="syncDot"></div>
@@ -916,6 +942,23 @@ body{font-family:'DM Sans',system-ui,sans-serif;background:var(--bg);color:var(-
 // ============================================================
 // CONFIG
 // ============================================================
+let lastStorageError=false;
+const originalSetItem=Storage.prototype.setItem;
+Storage.prototype.setItem=function(key,value){
+  try {
+    originalSetItem.call(this,key,String(value));
+    if(this.getItem(key)!==String(value))throw new Error('Verificarea salvării a eșuat');
+    if(this===localStorage && key!=='calendar_last_confirmed_v2'){
+      const el=document.getElementById('localSaveStatus');
+      if(el)el.textContent='Modificări locale salvate; confirmă salvarea generală';
+    }
+  }catch(e){
+    lastStorageError=true;
+    const el=document.getElementById('localSaveStatus');
+    if(el){el.textContent='EROARE: modificări nesalvate. Descarcă backup.';el.style.color='#fda4af';}
+    throw e;
+  }
+};
 const TODAY = new Date();
 const NOTION_DB_ID = '67bd7d37-5fa7-4715-88eb-80d9bee2c23f';
 const LS_TOKEN_KEY  = 'notion_token_v1';
@@ -983,19 +1026,7 @@ function loadArchived(){
 }
 // Cleanup: if a builtin is archived but no active custom replaces it, unarchive it
 // This fixes stale state from previous failed merge attempts
-function repairArchivedState(){
-  const toUnarchive=[];
-  for(const key of archivedKeys){
-    const [dowStr,time]=key.split('__');
-    const dow=Number(dowStr);
-    const hasActiveCustom=customStudents.some(s=>s.dow===dow&&s.time===time&&!s.archived);
-    if(!hasActiveCustom) toUnarchive.push(key);
-  }
-  if(toUnarchive.length>0){
-    toUnarchive.forEach(k=>archivedKeys.delete(k));
-    saveArchived();
-  }
-}
+function repairArchivedState(){ /* Arhivarea se schimbă numai la cererea utilizatorului. */ }
 function saveArchived(){
   try{localStorage.setItem(LS_ARCHIVE_KEY,JSON.stringify([...archivedKeys]));}
   catch(_){}
@@ -1031,7 +1062,7 @@ function hasAnyPayment(paid,sessionName){return parseStudents(sessionName).some(
 // ============================================================
 let notesCache={};
 function loadCache(){try{notesCache=JSON.parse(localStorage.getItem(LS_NOTES_KEY)||'{}');}catch(_){notesCache={};}}
-function saveCache(){try{localStorage.setItem(LS_NOTES_KEY,JSON.stringify(notesCache));}catch(_){}}
+function saveCache(){localStorage.setItem(LS_NOTES_KEY,JSON.stringify(notesCache));}
 function noteKey(dateStr,dow,time){return`${dateStr}__${dow}__${time}`;}
 function getNote(dateStr,dow,time){return notesCache[noteKey(dateStr,dow,time)]||null;}
 function setNote(dateStr,dow,time,data){notesCache[noteKey(dateStr,dow,time)]=data;saveCache();}
@@ -1099,7 +1130,7 @@ function hasPrevUnpaidSession(session,currentDate){
 // ============================================================
 // NOTION TOKEN
 // ============================================================
-function getToken(){try{return localStorage.getItem(LS_TOKEN_KEY)||'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';}catch(_){return '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';}}
+function getToken(){try{return localStorage.getItem(LS_TOKEN_KEY)||'';}catch(_){return '';}}
 function saveToken(t){try{localStorage.setItem(LS_TOKEN_KEY,t);}catch(_){}}
 const syncDot=document.getElementById('syncDot');
 const syncText=document.getElementById('syncText');
@@ -1117,38 +1148,17 @@ document.getElementById('syncBadge').addEventListener('click',()=>{
   if(newToken===null)return;
   const trimmed=newToken.trim();
   saveToken(trimmed);
-  if(trimmed){setSyncStatus('ok');showToast('Token salvat ✓','success');}
+  if(trimmed){syncText.textContent='Notion neconectat';showToast('Token păstrat local; conexiunea nu este verificată','');}
   else{syncDot.className='sync-dot';syncText.textContent='Notion';showToast('Token șters','');}
 });
-if(getToken())setSyncStatus('ok');
+syncText.textContent='Notion neconectat';
 
 // ============================================================
 // NOTION SYNC
 // ============================================================
-async function syncToNotion(session,ds,data){
-  const token=getToken();if(!token){setSyncStatus('notoken');return false;}
-  setSyncStatus('syncing');
-  if(resolveStatus(data)==='cancelled'){setSyncStatus('ok');return true;}
-  const students=parseStudents(session.name);
-  const payLines=students.map(s=>{
-    const p=getPaidForStudent(data.paid,s,session.name);
-    const label=p==='cash'?'💵 Cash':p==='revolut'?'🟣 Revolut':p==='card-firma'?'🏢 Cardul firmei':'❌ Neachitată';
-    return students.length>1?`${s}: ${label}`:label;
-  }).join(' · ');
-  try{
-    const sr=await fetch(`https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`,{method:'POST',headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json','Notion-Version':'2022-06-28'},body:JSON.stringify({filter:{property:'Elev',title:{equals:session.name}},page_size:1}),signal:AbortSignal.timeout(8000)});
-    if(!sr.ok){setSyncStatus('err');return false;}
-    const sd=await sr.json();const page=sd.results?.[0];
-    if(!page){setSyncStatus('err');return false;}
-    const blocks=[];
-    blocks.push({type:'callout',callout:{icon:{type:'emoji',emoji:'📝'},color:'gray_background',rich_text:[{type:'text',text:{content:`Notițe ${ds} (${RO_DAYS[new Date(ds).getDay()]})`},annotations:{bold:true}}]}});
-    if(data.note)blocks.push({type:'paragraph',paragraph:{rich_text:[{type:'text',text:{content:'📝 Ce am făcut: '},annotations:{bold:true}},{type:'text',text:{content:data.note}}]}});
-    if(data.hw)blocks.push({type:'paragraph',paragraph:{rich_text:[{type:'text',text:{content:'📚 Teme: '},annotations:{bold:true}},{type:'text',text:{content:data.hw}}]}});
-    blocks.push({type:'paragraph',paragraph:{rich_text:[{type:'text',text:{content:'💳 Plată: '},annotations:{bold:true}},{type:'text',text:{content:payLines}}]}});
-    const ar=await fetch(`https://api.notion.com/v1/blocks/${page.id}/children`,{method:'PATCH',headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json','Notion-Version':'2022-06-28'},body:JSON.stringify({children:blocks}),signal:AbortSignal.timeout(8000)});
-    if(!ar.ok){setSyncStatus('err');return false;}
-    setSyncStatus('ok');return true;
-  }catch(e){setSyncStatus('err');return false;}
+async function syncToNotion(){
+  syncText.textContent='Notion neconectat';
+  return false;
 }
 
 // ============================================================
@@ -1156,6 +1166,7 @@ async function syncToNotion(session,ds,data){
 // ============================================================
 let toastTimer;
 function showToast(msg,type=''){
+  if(lastStorageError && type==='success'){msg='Salvarea NU este confirmată. Descarcă backup.';type='error';}
   const t=document.getElementById('toast');
   t.textContent=msg;t.className='toast show'+(type?` ${type}`:'');
   clearTimeout(toastTimer);toastTimer=setTimeout(()=>{t.className='toast';},2800);
@@ -1478,20 +1489,20 @@ document.getElementById('btnSave').addEventListener('click',async()=>{
   const effStatus=isMultiStudent()?currentStudentStatuses:currentStatus;
   const allCancelled=isMultiStudent()&&parseStudents(modalSession.name).every(sn=>currentStudentStatuses[sn]==='cancelled');
   const data={
-    note:allCancelled?'':fieldNote.value.trim(),
-    hw:allCancelled?'':fieldHw.value.trim(),
+    note:fieldNote.value.trim(),
+    hw:fieldHw.value.trim(),
     paid:allCancelled?null:collectPaidData(modalSession.name),
     status:effStatus,savedAt:new Date().toISOString()
   };
   const ds=dateStr(modalDate);
-  setNote(ds,modalSession.dow,modalSession.time,data);
+  try { setNote(ds,modalSession.dow,modalSession.time,data); }
+  catch(e) { showToast('Salvare eșuată. Păstrează fereastra deschisă și descarcă backup.','error'); return; }
   closeModal();renderCalendar(currentMonthIdx);
   const btnSave=document.getElementById('btnSave');btnSave.disabled=true;
   showToast('Salvat local ✓','success');
   const synced=await syncToNotion(modalSession,ds,data);
   if(synced)showToast('Salvat în Notion ✓','success');
-  else if(!getToken())showToast('Salvat local (token Notion lipsă)','');
-  else showToast('Salvat local — Notion offline','');
+  else showToast('Salvat în acest browser. Notion neconectat.','');
   btnSave.disabled=false;
   if(document.getElementById('tab-plati').classList.contains('active'))renderPlati();
   if(document.getElementById('tab-teme').classList.contains('active'))renderTeme();
@@ -2408,20 +2419,26 @@ document.getElementById('tarifInput').addEventListener('change',e=>{
 // ============================================================
 // BACKUP / RESTORE
 // ============================================================
+function backupKeys(){return [LS_NOTES_KEY,LS_CUSTOM_KEY,LS_ARCHIVE_KEY,LS_TARIF_KEY,LS_ELEVI_KEY,LS_REMINDERS_KEY,LS_CORECTII_KEY];}
+function collectBackup(){
+  const data={__version:2,__exported:new Date().toISOString()};
+  for(const k of backupKeys()){const v=localStorage.getItem(k);if(v!==null)data[k]=v;}
+  data[LS_NOTES_KEY]=JSON.stringify(notesCache);
+  data[LS_CUSTOM_KEY]=JSON.stringify(customStudents);
+  data[LS_ARCHIVE_KEY]=JSON.stringify([...archivedKeys]);
+  data[LS_ELEVI_KEY]=JSON.stringify(eleviList);
+  data[LS_TARIF_KEY]=String(globalTarif);
+  return data;
+}
 async function exportBackup(){
-  const keys=[LS_NOTES_KEY,LS_CUSTOM_KEY,LS_ARCHIVE_KEY,LS_TOKEN_KEY,LS_TARIF_KEY,LS_ELEVI_KEY];
-  const data={__version:1,__exported:new Date().toISOString()};
-  keys.forEach(k=>{try{const v=localStorage.getItem(k);if(v!=null)data[k]=v;}catch(e){}});
-  const json=JSON.stringify(data,null,2);
-  const d=new Date();
-  const filename=`backup-meditatii-${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.json`;
-  try{
-    const downloads=await claude.use('downloads');
-    if(downloads){
-      await downloads.save({filename,data:json});
-      showToast('Backup exportat cu succes!','success');
-    } else { showToast('Descărcarea nu este disponibilă','error'); }
-  }catch(e){ showToast('Eroare la export: '+e.message,'error'); }
+  try {
+    const data=collectBackup();
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download='backup-meditatii-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';
+    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+    showToast('Backup pregătit pentru descărcare. Verifică fișierul în Downloads.','');
+  } catch(e){showToast('Backup nereușit: '+e.message,'error');}
 }
 
 function importBackup(file){
@@ -2430,8 +2447,11 @@ function importBackup(file){
     try{
       const data=JSON.parse(e.target.result);
       if(!data||typeof data!=='object'||!data.__version){showToast('Fișier backup invalid!','error');return;}
-      const keys=[LS_NOTES_KEY,LS_CUSTOM_KEY,LS_ARCHIVE_KEY,LS_TOKEN_KEY,LS_TARIF_KEY,LS_ELEVI_KEY];
-      keys.forEach(k=>{if(data[k]!=null)try{localStorage.setItem(k,data[k]);}catch(ex){}});
+      const keys=backupKeys();
+      if(!confirm('Importul înlocuiește datele locale incluse în fișier. Ai descărcat backupul actual?'))return;
+      localStorage.setItem('calendar_before_import_v2',JSON.stringify(collectBackup()));
+      for(const k of keys){if(data[k]!=null){if(typeof data[k]!=='string')throw new Error('Format invalid: '+k);if(k!==LS_TARIF_KEY)JSON.parse(data[k]);}}
+      for(const k of keys){if(data[k]!=null)localStorage.setItem(k,data[k]);}
       showToast('Backup restaurat! Se reîncarcă...','success');
       setTimeout(()=>location.reload(),1200);
     }catch(ex){showToast('Eroare la import: '+ex.message,'error');}
@@ -2906,4 +2926,36 @@ renderCalendar(0);
 updateFabBadge();
 initCorectiiTab();
 setTimeout(checkReminderPopup, 800);
+
+function saveAllChanges(){
+  lastStorageError=false;
+  try{
+    if(overlay.classList.contains('open'))throw new Error('Salvează mai întâi ședința deschisă.');
+    const data=collectBackup();
+    for(const k of backupKeys())if(data[k]!==undefined)localStorage.setItem(k,data[k]);
+    const snapshot=JSON.stringify(data);
+    const previous=localStorage.getItem('calendar_last_confirmed_v2');
+    if(previous)localStorage.setItem('calendar_previous_confirmed_v2',previous);
+    localStorage.setItem('calendar_last_confirmed_v2',snapshot);
+    if(localStorage.getItem('calendar_last_confirmed_v2')!==snapshot)throw new Error('Confirmare nereușită');
+    const el=document.getElementById('localSaveStatus');el.style.color='white';
+    el.textContent='Salvat în acest browser: '+new Date().toLocaleString('ro-RO');
+    showToast('Toate datele au fost salvate și verificate local.','success');
+  }catch(e){lastStorageError=true;showToast('NU s-a confirmat salvarea: '+e.message,'error');}
+}
+document.getElementById('saveAllChanges').addEventListener('click',saveAllChanges);
+document.getElementById('downloadSafeBackup').addEventListener('click',exportBackup);
+window.addEventListener('beforeunload',e=>{
+  if(lastStorageError||overlay.classList.contains('open')){e.preventDefault();e.returnValue='';}
+});
+window.addEventListener('storage',e=>{
+  if(backupKeys().includes(e.key)){
+    lastStorageError=true;
+    document.getElementById('localSaveStatus').textContent='Date modificate în altă filă. Descarcă backup înainte de reîncărcare.';
+    document.getElementById('saveAllChanges').disabled=true;
+    document.getElementById('btnSave').disabled=true;
+  }
+});
+const confirmed=localStorage.getItem('calendar_last_confirmed_v2');
+if(confirmed){try{document.getElementById('localSaveStatus').textContent='Ultima confirmare locală: '+new Date(JSON.parse(confirmed).__exported).toLocaleString('ro-RO');}catch(e){}}
 </script>
