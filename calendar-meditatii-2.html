@@ -1111,6 +1111,22 @@ function slotForTime(clean){
 function weekMonday(date){const d=new Date(date);const day=d.getDay()||7;d.setDate(d.getDate()-day+1);d.setHours(0,0,0,0);return d;}
 function weekLabel(m){const sun=new Date(m);sun.setDate(sun.getDate()+6);const fmt=d=>`${d.getDate()} ${RO_MONTHS[d.getMonth()].slice(0,3)}`;return`${fmt(m)} – ${fmt(sun)} ${sun.getFullYear()}`;}
 
+function studentMissedSession(note,studentName){
+  if(!note)return false;
+  const status=note.status;
+  return status && typeof status==='object'
+    ? status[studentName]==='cancelled'
+    : status==='cancelled';
+}
+function snapshotOpenSession(){
+  return {
+    note:fieldNote.value.trim(),hw:fieldHw.value.trim(),
+    hwGiven:document.getElementById('homeworkGiven')?.checked===true,
+    paid:collectPaidData(modalSession.name),
+    status:isMultiStudent()?{...currentStudentStatuses}:currentStatus,
+    savedAt:new Date().toISOString()
+  };
+}
 function hasPrevUnpaidSession(session,currentDate){
   const currentMs=currentDate.getTime();
   const students=parseStudents(session.name);
@@ -1121,7 +1137,7 @@ function hasPrevUnpaidSession(session,currentDate){
     const d=new Date(ds);if(isNaN(d.getTime())||d.getTime()>=currentMs)continue;
     if(resolveStatus(note)==='cancelled')continue;
     const hasContent=note&&(note.note||note.hw);if(!hasContent)continue;
-    const anyUnpaid=students.some(s=>!getPaidForStudent(note.paid,s,session.name));
+    const anyUnpaid=students.some(s=>!studentMissedSession(note,s)&&!getPaidForStudent(note.paid,s,session.name));
     if(anyUnpaid)return{dateStr:ds,note};
   }
   return null;
@@ -1345,8 +1361,17 @@ function updateStatusUI(){
 
 function selectStudentStatus(studentName,status){
   currentStudentStatuses[studentName]=(currentStudentStatuses[studentName]===status)?null:status;
+  try{
+    if(modalSession&&modalDate){
+      setNote(dateStr(modalDate),modalSession.dow,modalSession.time,snapshotOpenSession());
+      renderCalendar(currentMonthIdx);
+      if(document.getElementById('tab-plati').classList.contains('active'))renderPlati();
+      showToast(studentName+': '+(currentStudentStatuses[studentName]==='cancelled'?'Nu a venit, fără restanță':currentStudentStatuses[studentName]==='done'?'Prezent':'Prezență neprecizată')+'; salvat local','success');
+    }
+  }catch(e){showToast('Prezența NU s-a salvat. Descarcă backup și păstrează fereastra deschisă.','error');}
   updateStudentStatusUI(studentName);
 }
+
 function updateStudentStatusUI(studentName){
   const slug=studentName.replace(/\s+/g,'_');
   const btnD=document.getElementById(`sstatus-done-${slug}`);
@@ -1381,9 +1406,9 @@ function buildPaymentUI(sessionName,paidData){
       // Per-student status buttons
       const stRow=document.createElement('div');stRow.className='student-status-row';
       const st=currentStudentStatuses[studentName]||null;
-      const btnD=document.createElement('button');btnD.id=`sstatus-done-${slug}`;btnD.className='status-btn status-btn-sm'+(st==='done'?' active-done':'');btnD.textContent='✅ Am făcut';
+      const btnD=document.createElement('button');btnD.id=`sstatus-done-${slug}`;btnD.className='status-btn status-btn-sm'+(st==='done'?' active-done':'');btnD.textContent='A venit';
       btnD.addEventListener('click',()=>selectStudentStatus(studentName,'done'));stRow.appendChild(btnD);
-      const btnC=document.createElement('button');btnC.id=`sstatus-cancelled-${slug}`;btnC.className='status-btn status-btn-sm'+(st==='cancelled'?' active-cancelled':'');btnC.textContent='🚫 Nu vine';
+      const btnC=document.createElement('button');btnC.id=`sstatus-cancelled-${slug}`;btnC.className='status-btn status-btn-sm'+(st==='cancelled'?' active-cancelled':'');btnC.textContent='Nu a venit';
       btnC.addEventListener('click',()=>selectStudentStatus(studentName,'cancelled'));stRow.appendChild(btnC);
       block.appendChild(stRow);
     }
@@ -1393,7 +1418,9 @@ function buildPaymentUI(sessionName,paidData){
     const btnCard=document.createElement('button');
     btnCard.className='pay-btn'+(initPay==='revolut'?' active-revolut':initPay==='card-firma'?' active-card-firma':'');btnCard.textContent='💳 Card ▾';
     btnCard.addEventListener('click',()=>toggleCardFor(studentName,sessionName));methods.appendChild(btnCard);
-    block.appendChild(methods);
+    const unpaid=document.createElement('button');unpaid.className='pay-btn unpaid-option';unpaid.textContent='Neachitat';
+    unpaid.onclick=()=>{if(students.length>1){currentStudentStatuses[studentName]='done';updateStudentStatusUI(studentName);}else{currentStatus='done';updateStatusUI();}selectPaymentFor(studentName,null,sessionName);unpaid.classList.add('active-unpaid');showSaveFeedback('dirty');};
+    methods.appendChild(unpaid);block.appendChild(methods);
     const subOpts=document.createElement('div');subOpts.className='card-suboptions';subOpts.id=`cardsub-${studentName.replace(/\s+/g,'_')}`;subOpts.style.display=cardExpanded[studentName]?'flex':'none';
     const btnRevolut=document.createElement('button');btnRevolut.className='card-sub-btn'+(initPay==='revolut'?' active-revolut':'');btnRevolut.textContent='🟣 Revolut';
     btnRevolut.addEventListener('click',()=>selectPaymentFor(studentName,'revolut',sessionName));subOpts.appendChild(btnRevolut);
@@ -1417,6 +1444,7 @@ function updatePaymentBlockUI(studentName,sessionName){
   else if(method==='revolut'){if(btnCard)btnCard.className='pay-btn active-revolut';if(btnRevolut)btnRevolut.className='card-sub-btn active-revolut';if(subOpts)subOpts.style.display='flex';cardExpanded[studentName]=true;}
   else if(method==='card-firma'){if(btnCard)btnCard.className='pay-btn active-card-firma';if(btnCardF)btnCardF.className='card-sub-btn active-card-firma';if(subOpts)subOpts.style.display='flex';cardExpanded[studentName]=true;}
   else{if(subOpts)subOpts.style.display=cardExpanded[studentName]?'flex':'none';}
+  const unpaid=block.querySelector('.unpaid-option');if(unpaid)unpaid.classList.toggle('active-unpaid',!method&&(parseStudents(sessionName).length>1?currentStudentStatuses[studentName]==='done':currentStatus==='done'));
   if(clearBtn)clearBtn.style.display=method?'block':'none';
   if(curLabel)curLabel.textContent=method?payMethodLabel(method):'';
 }
@@ -1445,7 +1473,7 @@ function openModal(s,date){
     currentStatus=null;
   } else {
     currentStatus=note.status||null;
-    students.forEach(sn=>{currentStudentStatuses[sn]=null;});
+    students.forEach(sn=>{currentStudentStatuses[sn]=typeof note.status==='string'?note.status:null;});
   }
   updateStatusUI();
   currentPayments={};cardExpanded={};
@@ -1486,17 +1514,20 @@ document.getElementById('btnDeleteSession').addEventListener('click',()=>{
 
 document.getElementById('btnSave').addEventListener('click',async()=>{
   if(!modalSession||!modalDate)return;
-  const effStatus=isMultiStudent()?currentStudentStatuses:currentStatus;
+  const effStatus=isMultiStudent()?{...currentStudentStatuses}:currentStatus;
   const allCancelled=isMultiStudent()&&parseStudents(modalSession.name).every(sn=>currentStudentStatuses[sn]==='cancelled');
   const data={
     note:fieldNote.value.trim(),
     hw:fieldHw.value.trim(),
+    hwGiven:document.getElementById('homeworkGiven')?.checked===true,
     paid:allCancelled?null:collectPaidData(modalSession.name),
     status:effStatus,savedAt:new Date().toISOString()
   };
   const ds=dateStr(modalDate);
   try { setNote(ds,modalSession.dow,modalSession.time,data); }
-  catch(e) { showToast('Salvare eșuată. Păstrează fereastra deschisă și descarcă backup.','error'); return; }
+  catch(e) { showSaveFeedback('error','Datele nu au putut fi salvate.'); showToast('Salvare eșuată. Păstrează fereastra deschisă și descarcă backup.','error'); return; }
+  if(localStorage.getItem(LS_NOTES_KEY)!==JSON.stringify(notesCache)){showSaveFeedback('error','Verificarea datelor a eșuat.');return;}
+  showSaveFeedback('success');
   closeModal();renderCalendar(currentMonthIdx);
   const btnSave=document.getElementById('btnSave');btnSave.disabled=true;
   showToast('Salvat local ✓','success');
@@ -1710,7 +1741,7 @@ function savePayForStudent(nk,studentName,sessionName,newMethod){
 // PLĂȚI TAB
 // ============================================================
 function payBadgeHTML(method,nk,studentName,sessionName,hasSession,isCancelled){
-  if(isCancelled)return'<span class="pay-badge cancelled-row">🚫 Anulat</span>';
+  if(isCancelled)return'<span class="pay-badge cancelled-row">Nu a venit</span>';
   if(!hasSession&&!method)return'<span class="pay-badge no-data">–</span>';
   const cls=method==='cash'?'cash':method==='revolut'?'revolut':method==='card-firma'?'card-firma':'unpaid';
   const label=method==='cash'?'💵 Cash':method==='revolut'?'🟣 Revolut':method==='card-firma'?'🏢 Card firmă':'❌ Neachitat';
@@ -1723,16 +1754,12 @@ function renderPlati(){
   for(const[key,note]of Object.entries(notesCache)){
     const parts=key.split('__');if(parts.length<3)continue;
     const[ds,dowStr,time]=parts;const dow=Number(dowStr);
-    const sess=getAllActiveSessions().find(s=>s.dow===dow&&s.time===time);if(!sess)continue;
+    const matched=getAllActiveSessions().find(s=>s.dow===dow&&s.time===time);const sess=note.sessionName?{...(matched||{}),name:note.sessionName,cls:matched?.cls||'',dow,time}:matched;if(!sess)continue;
     const d=new Date(ds);if(isNaN(d.getTime()))continue;
     const isCancelled=resolveStatus(note)==='cancelled';const hasContent=!!(note.note||note.hw)||isCancelled||hasAnyPayment(note.paid,sess.name)||resolveStatus(note)==='done';
     const students=parseStudents(sess.name);
     students.forEach(studentName=>{
-      // For multi-student sessions, check per-student status
-      let studentCancelled=isCancelled;
-      if(students.length>1&&note.status&&typeof note.status==='object'){
-        studentCancelled=note.status[studentName]==='cancelled';
-      }
+      const studentCancelled=studentMissedSession(note,studentName);
       const method=studentCancelled?null:getPaidForStudent(note.paid,studentName,sess.name);
       allEntries.push({ds,date:d,dow,time,session:sess,note,studentName,method,hasContent,isCancelled:studentCancelled,nk:key});
     });
@@ -1744,7 +1771,7 @@ function renderPlati(){
   const paidCount=allEntries.filter(e=>e.hasContent&&!e.isCancelled&&e.method).length;
   const unpaidCount=allEntries.filter(e=>e.hasContent&&!e.isCancelled&&!e.method).length;
   const cancelledCount=allEntries.filter(e=>e.isCancelled).length;
-  document.getElementById('platiSubtitle').textContent=`${paidCount} achitate · ${unpaidCount} neachitate · ${cancelledCount} anulate`;
+  document.getElementById('platiSubtitle').textContent=`${paidCount} achitate · ${unpaidCount} neachitate · ${cancelledCount} absențe`;
   let html='';
   for(const[wk,{monday,entries}]of weekMap){
     const wkPaid=entries.filter(e=>e.hasContent&&!e.isCancelled&&e.method).length;
@@ -2609,7 +2636,7 @@ function populateCorectiiElevSelect(){
 function getAllStudentNames(){
   const names = new Set();
   // from sessions
-  ALL_SESSIONS.forEach(s=>{ if(s.name) s.name.split(/\s*\+\s*/).forEach(n=>{ if(n.trim()) names.add(n.trim()); }); });
+  getAllActiveSessions().forEach(s=>{ if(s.name) s.name.split(/\s*\+\s*/).forEach(n=>{ if(n.trim()) names.add(n.trim()); }); });
   // from custom students
   try{ const cs=JSON.parse(localStorage.getItem('custom_students_v1')||'[]'); cs.forEach(s=>{ if(s.name&&!s.archived) names.add(s.name); }); }catch(_){}
   return [...names].sort((a,b)=>a.localeCompare(b,'ro'));
@@ -2929,6 +2956,7 @@ setTimeout(checkReminderPopup, 800);
 
 function saveAllChanges(){
   lastStorageError=false;
+  showSaveFeedback('saving');
   try{
     if(overlay.classList.contains('open'))throw new Error('Salvează mai întâi ședința deschisă.');
     const data=collectBackup();
@@ -2938,10 +2966,9 @@ function saveAllChanges(){
     if(previous)localStorage.setItem('calendar_previous_confirmed_v2',previous);
     localStorage.setItem('calendar_last_confirmed_v2',snapshot);
     if(localStorage.getItem('calendar_last_confirmed_v2')!==snapshot)throw new Error('Confirmare nereușită');
-    const el=document.getElementById('localSaveStatus');el.style.color='white';
-    el.textContent='Salvat în acest browser: '+new Date().toLocaleString('ro-RO');
+    showSaveFeedback('success');
     showToast('Toate datele au fost salvate și verificate local.','success');
-  }catch(e){lastStorageError=true;showToast('NU s-a confirmat salvarea: '+e.message,'error');}
+  }catch(e){lastStorageError=true;showSaveFeedback('error',e.message);showToast('NU s-a confirmat salvarea: '+e.message,'error');}
 }
 document.getElementById('saveAllChanges').addEventListener('click',saveAllChanges);
 document.getElementById('downloadSafeBackup').addEventListener('click',exportBackup);
@@ -2958,4 +2985,62 @@ window.addEventListener('storage',e=>{
 });
 const confirmed=localStorage.getItem('calendar_last_confirmed_v2');
 if(confirmed){try{document.getElementById('localSaveStatus').textContent='Ultima confirmare locală: '+new Date(JSON.parse(confirmed).__exported).toLocaleString('ro-RO');}catch(e){}}
+</script>
+<style>.homework-calendar-toggle{display:inline-flex;align-items:center;gap:3px;flex-shrink:0;margin-left:auto;font-weight:800;font-size:12px;padding:2px 4px;border-radius:5px;cursor:pointer}.homework-calendar-toggle input{width:14px;height:14px;accent-color:#00835b;cursor:pointer}.homework-calendar-toggle.given{color:#006b43;background:#d0f4df}.homework-calendar-toggle.missing{color:#b00020;background:#ffe0e6}.homework-modal-toggle{display:flex;gap:8px;align-items:center;margin:8px 0;padding:12px;background:#dcf7e6;color:#14442e;font-size:14px}.homework-modal-toggle input{width:19px;height:19px}.payment-subtabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.payment-subtabs button,.weekly-nav button,.week-select{border:1px solid #b9c2ec;background:var(--surface);color:var(--fg);padding:10px;border-radius:8px;cursor:pointer}.payment-subtabs button.active{background:#1D2AB6;color:white}.weekly-nav{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}.weekly-nav strong{flex:1;text-align:center}.weekly-nav label{font-size:13px}.weekly-nav input{padding:8px;border:1px solid #b9c2ec;border-radius:7px}.weekly-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.weekly-card{padding:18px;border-radius:12px;background:#dff4f1;color:#103e43}.weekly-card strong{display:block;font-size:25px;margin-top:8px}.wc-1{background:#dce9ff}.wc-2{background:#ecddff}.wc-3{background:#ccf2d9}.wc-4{background:#ffdbe8;color:#8c143d}.wc-5{background:#fff0c7}.weekly-counts{padding:14px;background:var(--surface);border-radius:9px;margin:12px 0}.weekly-explanation{font-size:13px;line-height:1.6;margin:12px 0}#weeklyPayments h3{margin:20px 0 10px}[hidden]{display:none!important}@media(max-width:650px){.weekly-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.weekly-card strong{font-size:20px}}</style><script>const givenLabel=document.createElement('label');givenLabel.className='homework-modal-toggle';givenLabel.innerHTML='<input type="checkbox" id="homeworkGiven"> Am dat temă pentru ședința următoare';fieldHw.before(givenLabel);
+const oldOpenHomework=openModal;openModal=function(s,date){oldOpenHomework(s,date);document.getElementById('homeworkGiven').checked=getNote(dateStr(date),s.dow,s.time)?.hwGiven===true};
+const oldSessionSnapshot=snapshotOpenSession;snapshotOpenSession=function(){return {...oldSessionSnapshot(),hwGiven:document.getElementById('homeworkGiven').checked}};
+const oldSetTutorNote=setNote;setNote=function(ds,dow,time,data){const existing=getNote(ds,dow,time)||{},sess=getAllActiveSessions().find(s=>s.dow===Number(dow)&&s.time===time);const merged={...existing,...data};if(modalSession&&modalDate&&dateStr(modalDate)===ds&&modalSession.dow===Number(dow)&&modalSession.time===time)merged.hwGiven=document.getElementById('homeworkGiven').checked;if(!merged.sessionName&&sess)merged.sessionName=sess.name;if(!merged.feePerStudent&&globalTarif>0&&(resolveStatus(merged)==='done'||hasAnyPayment(merged.paid,merged.sessionName||sess?.name||'')))merged.feePerStudent=globalTarif;oldSetTutorNote(ds,dow,time,merged);};
+const oldHomeworkChip=buildChip;buildChip=function(s,date,isFree){const chip=oldHomeworkChip(s,date,isFree);if(isFree||chip.classList.contains('cancelled'))return chip;chip.classList.add('homework-tracked');const ds=dateStr(date),n=getNote(ds,s.dow,s.time)||{};const label=document.createElement('label');label.className='homework-calendar-toggle '+(n.hwGiven===true?'given':'missing');label.title=n.hwGiven===true?'Temă dată':'Temă nebifată';label.setAttribute('aria-label','Am dat temă: '+s.name+' '+ds+' '+s.time);const cb=document.createElement('input');cb.type='checkbox';cb.checked=n.hwGiven===true;label.append(document.createTextNode('T '),cb);label.addEventListener('click',e=>e.stopPropagation());cb.addEventListener('change',()=>{try{const next={...(getNote(ds,s.dow,s.time)||{}),hwGiven:cb.checked};setNote(ds,s.dow,s.time,next);label.classList.toggle('given',cb.checked);label.classList.toggle('missing',!cb.checked);label.title=cb.checked?'Temă dată':'Temă nebifată';showToast(cb.checked?'Temă bifată și salvată.':'Temă debifată și salvată.','success')}catch(err){cb.checked=!cb.checked;showToast('Bifa nu s-a salvat. Descarcă un backup.','error')}});chip.append(label);return chip};
+const payTabs=document.createElement('div');payTabs.className='payment-subtabs';payTabs.innerHTML='<button type="button" id="payDetailed" class="active">Situație plăți detaliată</button><button type="button" id="payWeekly">Centralizator săptămânal</button>';document.getElementById('platiContainer').before(payTabs);const weeklyPanel=document.createElement('div');weeklyPanel.id='weeklyPayments';weeklyPanel.hidden=true;document.getElementById('platiContainer').after(weeklyPanel);
+let chosenWeek=dateStr(weekMonday(new Date()));
+function showPaymentView(weekly){document.getElementById('platiContainer').hidden=weekly;weeklyPanel.hidden=!weekly;document.getElementById('payWeekly').classList.toggle('active',weekly);document.getElementById('payDetailed').classList.toggle('active',!weekly);if(weekly)renderWeeklyPayments()}
+document.getElementById('payWeekly').onclick=()=>showPaymentView(true);document.getElementById('payDetailed').onclick=()=>showPaymentView(false);
+function tutorWeeklyRows(){const rows=[],unmatched=[];const all=[...getAllActiveSessions(),...customStudents,...BUILTIN_SESSIONS];for(const [key,note] of Object.entries(notesCache)){const [ds,dow,time]=key.split('__');if(!/^\d{4}-\d{2}-\d{2}$/.test(ds)||!time)continue;const sess=all.find(s=>s.dow===Number(dow)&&s.time===time);const name=note.sessionName||sess?.name;if(!name){unmatched.push(ds);continue}const date=new Date(ds+'T12:00:00'),week=dateStr(weekMonday(date));for(const student of parseStudents(name)){const absent=studentMissedSession(note,student);const status=typeof note.status==='object'&&note.status?note.status[student]:note.status;const method=getPaidForStudent(note.paid,student,name);const recorded=status==='done'||!!method;const fee=Number(note.feePerStudent)>0?Number(note.feePerStudent):globalTarif;rows.push({ds,time,student,sessionName:name,week,absent,status,method,recorded,fee,estimated:!note.feePerStudent})}}return {rows,unmatched}}
+function summarizeTutorWeek(rows){const x={cash:0,card:0,revolut:0,other:0,due:0,paidCount:0,unpaidCount:0,absent:0,pending:0,unknownFee:0,estimated:0};for(const r of rows){if(r.absent){x.absent++;continue}if(!r.recorded){x.pending++;continue}if(!r.fee)x.unknownFee++;if(r.estimated)x.estimated++;if(r.method){x.paidCount++;if(r.method==='cash')x.cash+=r.fee;else if(r.method==='card-firma')x.card+=r.fee;else if(r.method==='revolut')x.revolut+=r.fee;else x.other+=r.fee}else{x.unpaidCount++;x.due+=r.fee}}x.paid=x.cash+x.card+x.revolut+x.other;x.total=x.paid+x.due;return x}
+function tutorMoney(n){return Number(n).toLocaleString('ro-RO',{minimumFractionDigits:0,maximumFractionDigits:2})+' lei'}
+function moveTutorWeek(step){const d=new Date(chosenWeek+'T12:00:00');d.setDate(d.getDate()+7*step);chosenWeek=dateStr(d);renderWeeklyPayments()}
+function renderWeeklyPayments(){const {rows,unmatched}=tutorWeeklyRows(),selected=rows.filter(r=>r.week===chosenWeek),s=summarizeTutorWeek(selected),m=new Date(chosenWeek+'T12:00:00');const amount=n=>s.unknownFee?'Tarif lipsă':tutorMoney(n);const cards=[['Cash',s.cash],['Cardul firmei',s.card],['Revolut',s.revolut],['Total încasat',s.paid],['De încasat',s.due],['Valoare ședințe efectuate',s.total]];
+weeklyPanel.innerHTML=`<div class="weekly-nav"><button type="button" id="weekBack">← Săptămâna anterioară</button><strong>Săptămâna ${weekLabel(m)}</strong><button type="button" id="weekNext">Săptămâna următoare →</button><label>Alege o zi din săptămână <input type="date" id="weekDate" value="${chosenWeek}"></label></div><div class="weekly-cards">${cards.map(([label,n],i)=>`<div class="weekly-card wc-${i}"><span>${label}</span><strong>${amount(n)}</strong></div>`).join('')}</div><div class="weekly-counts">${s.paidCount} ședințe-elev achitate · ${s.unpaidCount} ședințe-elev neachitate · ${s.absent} absențe · ${s.pending} înregistrări cu prezență neconfirmată</div><p class="weekly-explanation">Fiecare elev dintr-o grupă se numără separat. Absențele și înregistrările fără prezență confirmată sau plată nu sunt incluse în restanțe. Sumele sunt atribuite săptămânii ședinței; data efectivă a încasării nu este înregistrată.${s.estimated?' Pentru înregistrările fără tarif memorat se folosește tariful curent: '+tutorMoney(globalTarif)+'/elev/ședință.':''}${s.unknownFee?' Completează tariful din bara de sus pentru a calcula sumele.':''}</p>${s.other?'<p>Alte metode de plată: '+tutorMoney(s.other)+'</p>':''}<h3>Situația pe zile</h3><div style="overflow:auto"><table class="data-table"><thead><tr><th>Zi</th><th>Cash</th><th>Card firmă</th><th>Revolut</th><th>Încasat</th><th>De încasat</th><th>Neachitate</th></tr></thead><tbody>${Array.from({length:7},(_,i)=>{const d=new Date(m);d.setDate(d.getDate()+i);const x=summarizeTutorWeek(selected.filter(r=>r.ds===dateStr(d)));return `<tr><td>${RO_DAYS_SHORT[d.getDay()]} ${d.getDate()}.${d.getMonth()+1}</td><td>${x.unknownFee?'—':tutorMoney(x.cash)}</td><td>${x.unknownFee?'—':tutorMoney(x.card)}</td><td>${x.unknownFee?'—':tutorMoney(x.revolut)}</td><td>${x.unknownFee?'—':tutorMoney(x.paid)}</td><td>${x.unknownFee?'—':tutorMoney(x.due)}</td><td>${x.unpaidCount}</td></tr>`}).join('')}</tbody></table></div><h3>Centralizator pe săptămâni</h3><div style="overflow:auto"><table class="data-table"><thead><tr><th>Săptămâna</th><th>Cash</th><th>Card firmă</th><th>Revolut</th><th>Total încasat</th><th>De încasat</th><th>Neachitate</th></tr></thead><tbody>${[...new Set([chosenWeek,...rows.map(r=>r.week)])].sort().reverse().map(w=>{const x=summarizeTutorWeek(rows.filter(r=>r.week===w));return `<tr><td><button class="week-select" data-week="${w}">${weekLabel(new Date(w+'T12:00:00'))}</button></td><td>${x.unknownFee?'—':tutorMoney(x.cash)}</td><td>${x.unknownFee?'—':tutorMoney(x.card)}</td><td>${x.unknownFee?'—':tutorMoney(x.revolut)}</td><td>${x.unknownFee?'—':tutorMoney(x.paid)}</td><td>${x.unknownFee?'—':tutorMoney(x.due)}</td><td>${x.unpaidCount}</td></tr>`}).join('')}</tbody></table></div>${unmatched.length?'<p class="weekly-explanation">'+unmatched.length+' înregistrări nu au putut fi asociate unui elev și nu sunt incluse în totaluri.</p>':''}`;
+document.getElementById('weekBack').onclick=()=>moveTutorWeek(-1);document.getElementById('weekNext').onclick=()=>moveTutorWeek(1);document.getElementById('weekDate').onchange=e=>{if(!e.target.value)return;chosenWeek=dateStr(weekMonday(new Date(e.target.value+'T12:00:00')));renderWeeklyPayments()};weeklyPanel.querySelectorAll('[data-week]').forEach(b=>b.onclick=()=>{chosenWeek=b.dataset.week;renderWeeklyPayments()})}
+const oldRenderTutorPayments=renderPlati;renderPlati=function(){oldRenderTutorPayments();if(!weeklyPanel.hidden)renderWeeklyPayments()};document.getElementById('tarifInput').addEventListener('change',()=>{if(!weeklyPanel.hidden)renderWeeklyPayments()});
+renderCalendar(currentMonthIdx);
+</script><style>.session.homework-tracked{padding-right:42px;min-height:32px}.homework-calendar-toggle{position:absolute;right:3px;top:3px}.session.homework-tracked .half-add-btn{top:auto;bottom:2px;height:19px;min-height:19px}</style>
+<style>
+#saveAllChanges[data-save-state="success"]{background:#087e46!important;color:#fff!important;border:3px solid #b7ffd6!important;box-shadow:0 0 0 5px #087e4630!important}
+#saveAllChanges[data-save-state="error"]{background:#b51d38!important;color:#fff!important;border:3px solid #ffd5dc!important}
+#saveAllChanges[data-save-state="dirty"]{background:#ffcf55!important;color:#382700!important}
+#saveAllChanges[data-save-state="saving"]{background:#d6e5ff!important;color:#173778!important}
+#localSaveStatus.save-confirmation{display:block;font-size:14px!important;font-weight:800;padding:10px 14px;border-radius:9px;background:#fff;color:#16472d!important;max-width:420px;white-space:normal}
+#localSaveStatus.save-confirmation.error{background:#ffe1e6;color:#97152d!important}
+#saveConfirmationBanner{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:99999;max-width:calc(100vw - 32px);padding:18px 26px;background:#087e46;color:white;border:3px solid #b7ffd6;border-radius:14px;box-shadow:0 8px 30px #0004;font-size:18px;font-weight:800;text-align:center;pointer-events:none}
+#saveConfirmationBanner.error{background:#b51d38;border-color:#ffd5dc}
+</style>
+<script>
+let saveFeedbackTimer;
+function showSaveFeedback(state,detail){
+ const btn=document.getElementById('saveAllChanges'),status=document.getElementById('localSaveStatus');
+ btn.dataset.saveState=state;status.className='save-confirmation'+(state==='error'?' error':'');
+ if(state==='saving'){btn.textContent='Se salvează…';status.textContent='Se verifică salvarea în acest browser…';return;}
+ if(state==='dirty'){btn.textContent='Salvează modificările';status.textContent='Modificări noi. Apasă Salvează pentru confirmare.';return;}
+ const ok=state==='success',time=new Date().toLocaleTimeString('ro-RO');
+ btn.textContent=ok?'SALVAT CU SUCCES':'SALVAREA A EȘUAT';
+ status.textContent=ok?'Salvare verificată la '+time+' în acest browser.':'Nu s-a confirmat salvarea. '+(detail||'Încearcă din nou.');
+ let banner=document.getElementById('saveConfirmationBanner');if(!banner){banner=document.createElement('div');banner.id='saveConfirmationBanner';banner.setAttribute('role','status');banner.setAttribute('aria-live','polite');document.body.append(banner);}
+ banner.className=ok?'':'error';banner.textContent=ok?'Date salvate și verificate la '+time:'Salvarea nu a reușit. Verifică mesajul de sus.';banner.hidden=false;
+ clearTimeout(saveFeedbackTimer);saveFeedbackTimer=setTimeout(()=>{banner.hidden=true},6000);
+}
+['input','change'].forEach(event=>document.addEventListener(event,e=>{
+ if(e.target.matches('input,textarea,select')&&e.target.type!=='file')showSaveFeedback('dirty');
+}));
+</script>
+
+<style>.pay-btn.active-unpaid,.debt-badge{background:#ffe0e7!important;color:#a31538!important;border:2px solid #ce3155!important}.debt-badge{display:block;padding:3px 5px;border-radius:6px;font-size:10px;font-weight:800;margin-top:4px;white-space:normal}.carry-panel{background:#fff0d2;color:#552e00;padding:16px;border:2px solid #ffbf43;border-radius:12px;margin:14px 0}.carry-row{padding:10px 0;border-bottom:1px solid #ddbd86;display:flex;gap:9px;align-items:center;flex-wrap:wrap}.carry-row span{flex:1;min-width:150px}.carry-row button{padding:7px 10px;border-radius:7px;border:1px solid #b5a48c;background:white;color:#29334b;cursor:pointer}</style>
+<script>
+function carriedTutorDebts(week,students){return tutorWeeklyRows().rows.filter(r=>r.week<week&&!r.absent&&r.recorded&&!r.method&&(!students||students.includes(r.student)))}
+function debtLabel(rows){return rows.length+' ședințe neachitate · '+(rows.some(r=>!r.fee)?'tarif de completat':tutorMoney(rows.reduce((sum,r)=>sum+r.fee,0)))}
+function debtPanel(rows){const box=document.createElement('div');box.className='carry-panel';const title=document.createElement('strong');title.textContent='Restanțe din săptămânile anterioare: '+debtLabel(rows);box.append(title);rows.forEach(r=>{const line=document.createElement('div');line.className='carry-row';const label=document.createElement('span');label.textContent=r.student+' · '+r.ds+' · '+r.time+' · '+(r.fee?tutorMoney(r.fee):'Tarif lipsă');line.append(label);[['Cash','cash'],['Card firmă','card-firma'],['Revolut','revolut']].forEach(([text,method])=>{const btn=document.createElement('button');btn.textContent='Încasează '+text;btn.onclick=()=>{if(!confirm('Confirmi încasarea pentru '+r.student+', ședința din '+r.ds+'?'))return;try{const dow=new Date(r.ds+'T12:00:00').getDay(),note=getNote(r.ds,dow,r.time);if(!note)throw Error('Ședința nu a fost găsită');const name=note.sessionName||r.sessionName||r.student,paid=parseStudents(name).length>1?{...(typeof note.paid==='object'&&note.paid?note.paid:{}),[r.student]:method}:method;setNote(r.ds,dow,r.time,{...note,paid,savedAt:new Date().toISOString()});showSaveFeedback('success');renderCalendar(currentMonthIdx);renderPlati();line.remove();title.textContent='Restanțe actualizate. Redeschide lista pentru totalul curent.';}catch(e){showSaveFeedback('error',e.message)}};line.append(btn)});box.append(line)});return box}
+const renderWeeklyBeforeCarry=renderWeeklyPayments;renderWeeklyPayments=function(){renderWeeklyBeforeCarry();const rows=carriedTutorDebts(chosenWeek);if(rows.length)weeklyPanel.querySelector('.weekly-nav').after(debtPanel(rows));};
+const buildChipBeforeCarry=buildChip;buildChip=function(s,date,isFreeSlot){const chip=buildChipBeforeCarry(s,date,isFreeSlot);if(chip&&!isFreeSlot&&s.name){const ds=dateStr(date),week=dateStr(weekMonday(new Date(ds+'T12:00:00'))),rows=carriedTutorDebts(week,parseStudents(s.name));if(rows.length){const badge=document.createElement('span');badge.className='debt-badge';badge.textContent='Restanțe anterioare: '+debtLabel(rows);chip.append(badge)}}return chip};
+const openModalBeforeCarry=openModal;openModal=function(s,date){openModalBeforeCarry(s,date);document.querySelectorAll('#paymentSection > .carry-panel').forEach(e=>e.remove());const rows=carriedTutorDebts(dateStr(weekMonday(date)),parseStudents(s.name));if(rows.length)document.getElementById('paymentSection').append(debtPanel(rows));document.querySelectorAll('#paymentSection .student-pay-block').forEach((block,i)=>{const student=parseStudents(s.name)[i];if(student)updatePaymentBlockUI(student,s.name)});};
+renderCalendar(currentMonthIdx);
 </script>
